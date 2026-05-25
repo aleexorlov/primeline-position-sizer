@@ -641,7 +641,7 @@ def main():
 
         sector_pct = st.number_input(
             "Current Sector Exposure (% NAV)",
-            min_value=0.0, max_value=100.0, value=0.0, step=0.5, format="%.1f%%",
+            min_value=0.0, max_value=100.0, value=0.0, step=0.5, format="%.1f",
             help="Existing exposure to this sector. §7.2 cap = 25% NAV.",
         )
 
