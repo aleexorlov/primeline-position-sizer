@@ -2,6 +2,7 @@
 """
 Primeline Capital — Position Sizer Web App v2.1
 AIFM-compliant | Methodology v1.1 | Aligned with AIFM Filing §4, §6.2, §7, §8, §9, §10
+v2.2: composite stop-loss (vol-regime × quality × base ATR mult); discretionary −20% stop fix
 """
 
 import math
@@ -134,13 +135,27 @@ FX_PAIRS = {
     "EUR/USD", "GBP/USD", "USD/JPY", "EUR/GBP", "GBP/JPY",
 }
 
-# §8.3 Conviction score → multiplier (Methodology Step 2)
+# §8.3 Conviction score → position-size multiplier (Methodology Step 2)
 CONVICTION_TABLE = [(80, 1.50), (60, 1.25), (40, 1.00), (20, 0.75), (0, 0.50)]
 
-# §6.2, §8.2 Tier → multiplier (Methodology Step 3)
+# §9.1 Quality score → stop-width multiplier (Methodology Step 7, stop composite)
+# High-quality businesses earn wider stops; low quality gets tighter risk control.
+QUALITY_TABLE = [(80, 1.20), (60, 1.10), (40, 1.00), (20, 0.95), (0, 0.90)]
+
+# §9.1 Vol regime → stop-width multiplier (AIFM §9.1: "time horizon and volatility regime")
+# Elevated vol expands stop to avoid shakeout; compressed vol tightens it.
+VOL_REGIME_STOP = {
+    "very_elevated": 1.30,  # vol_regime ≥ 1.50
+    "elevated":      1.15,  # vol_regime 1.20–1.49
+    "normal":        1.00,  # vol_regime 0.80–1.19
+    "compressed":    0.90,  # vol_regime < 0.80
+}
+MAX_COMPOSITE_ATR = 4.5   # absolute ceiling on composite ATR multiplier
+
+# §6.2, §8.2 Tier → position-size multiplier (Methodology Step 3)
 TIER_MULT = {"Tier 1": 1.25, "Tier 2": 1.00, "Tier 3": 1.00, "Discretionary": 0.67}
 
-# §4.3 Time horizon → multiplier (Methodology Step 4)
+# §4.3 Time horizon → position-size multiplier (Methodology Step 4)
 TIME_MULT = {
     "Extended-Hold": 1.20,
     "LT Strategic":  1.00,
@@ -148,7 +163,7 @@ TIME_MULT = {
     "Tactical":      0.60,
 }
 
-# §9.1 ATR multiplier by position type
+# §9.1 Base ATR multiplier by position type (before vol-regime and quality adjustments)
 ATR_MULT = {
     "Extended-Hold": 3.0,
     "LT Strategic":  3.0,
@@ -156,11 +171,11 @@ ATR_MULT = {
     "Tactical":      2.0,
 }
 
-# §8.2 Hard caps by tier (% of NAV)
+# §8.2 Hard caps by tier (% of NAV) at initiation
 HARD_CAP_PCT = {
-    "Tier 1":       5.0,   # requires IC approval
-    "Tier 2":       3.0,
-    "Tier 3":       3.0,
+    "Tier 1":        5.0,   # requires IC approval
+    "Tier 2":        3.0,
+    "Tier 3":        3.0,
     "Discretionary": 2.0,
 }
 
@@ -174,6 +189,14 @@ def score_to_mult(score: float, table: list) -> float:
         if score >= threshold:
             return mult
     return table[-1][1]
+
+
+def vol_regime_stop_mult(ratio: float) -> float:
+    """§9.1: expand stop in elevated vol, tighten in compressed vol."""
+    if ratio >= 1.50: return VOL_REGIME_STOP["very_elevated"]
+    if ratio >= 1.20: return VOL_REGIME_STOP["elevated"]
+    if ratio < 0.80:  return VOL_REGIME_STOP["compressed"]
+    return VOL_REGIME_STOP["normal"]
 
 
 def vol_regime_label(ratio: float) -> str:
@@ -333,7 +356,9 @@ def size_position(
     vol60:            float,    # annualised 60-day realised vol
     entry_price:      float,
     atr14:            float,
-    conviction:       float,    # 0-100
+    conviction:       float,    # 0-100  → position-size multiplier
+    quality_score:    float,    # 0-100  → stop-width multiplier (§9.1 composite)
+    vol_regime:       float,    # current ATR% ÷ 90d avg ATR% → stop-width multiplier
     pos_type:         str,
     tier:             str,
     direction:        str,      # "Long" or "Short"
@@ -387,21 +412,29 @@ def size_position(
     pos_value   = round(shares * entry_price, 2)
     pos_pct_nav = round(pos_value / nav * 100, 2) if nav else 0
 
-    # ── Step 7: ATR Stop-Loss §9.1 + 25% Hard Stop §9.2 ─────────────────────
-    atr_mult = ATR_MULT.get(pos_type, 2.5)
+    # ── Step 7: ATR Stop-Loss §9.1 + Composite Multiplier + Hard Stop §9.2 ──────
+    # Composite ATR mult = Base (by position type)
+    #                    × Vol Regime mult (AIFM §9.1: "time horizon and volatility regime")
+    #                    × Quality mult   (fundamental quality earns wider stop breathing room)
+    base_atr_mult    = ATR_MULT.get(pos_type, 2.5)
+    vr_stop_mult     = vol_regime_stop_mult(vol_regime)
+    qual_stop_mult   = score_to_mult(quality_score, QUALITY_TABLE)
+    composite_atr_m  = round(min(base_atr_mult * vr_stop_mult * qual_stop_mult, MAX_COMPOSITE_ATR), 3)
+
+    # Hard stop: §9.2 standard = −25%; §7.4 Discretionary = −20% (mandatory auto-exit)
+    hard_stop_pct    = 0.80 if discretionary else 0.75   # 0.80 → −20%, 0.75 → −25%
 
     if direction == "Long":
-        atr_stop_price  = round(entry_price - atr_mult * atr14, 4)
-        hard_stop_price = round(entry_price * 0.75, 4)           # §9.2: -25%
-        disc_stop_price = round(entry_price * 0.80, 4) if discretionary else None
+        atr_stop_price  = round(entry_price - composite_atr_m * atr14, 4)
+        hard_stop_price = round(entry_price * hard_stop_pct, 4)
 
         # Stop cannot be below thesis floor; hard stop is the absolute floor
         effective_stop = max(atr_stop_price, thesis_floor)
-        effective_stop = max(effective_stop, hard_stop_price)     # hard stop is ceiling from below
+        effective_stop = max(effective_stop, hard_stop_price)
         effective_stop = round(effective_stop, 4)
 
-        atr_stop_clamped   = effective_stop > atr_stop_price
-        floor_clamped      = effective_stop == thesis_floor and thesis_floor > atr_stop_price
+        atr_stop_clamped = effective_stop > atr_stop_price
+        floor_clamped    = effective_stop == thesis_floor and thesis_floor > atr_stop_price
 
         # Take-profit: above entry for long
         tp_levels = []
@@ -412,8 +445,8 @@ def size_position(
             tp_levels.append({"r": r, "price": tp_price, "pct": tp_pct})
 
     else:  # Short
-        atr_stop_price  = round(entry_price + atr_mult * atr14, 4)
-        hard_stop_price = round(entry_price * 1.25, 4)            # §9.2: +25%
+        atr_stop_price  = round(entry_price + composite_atr_m * atr14, 4)
+        hard_stop_price = round(entry_price * (2 - hard_stop_pct), 4)  # +25% or +20%
 
         # For shorts, thesis floor is a CEILING (cover if price drops below)
         effective_stop = min(atr_stop_price, thesis_floor) if thesis_floor > 0 else atr_stop_price
@@ -491,10 +524,14 @@ def size_position(
         "shares":         shares,
         "pos_value":      pos_value,
         "pos_pct_nav":    pos_pct_nav,
-        # Step 7
-        "atr_mult":       atr_mult,
+        # Step 7 — composite stop
+        "base_atr_mult":  base_atr_mult,
+        "vr_stop_mult":   vr_stop_mult,
+        "qual_stop_mult": qual_stop_mult,
+        "atr_mult":       composite_atr_m,   # composite (what was actually used)
         "atr_stop_price": atr_stop_price,
         "hard_stop_price":hard_stop_price,
+        "hard_stop_pct":  round((1 - hard_stop_pct) * 100, 0),  # 20 or 25
         "effective_stop": effective_stop,
         "stop_dist":      round(abs(entry_price - effective_stop), 4),
         "atr_stop_clamped": atr_stop_clamped,
@@ -598,7 +635,7 @@ def main():
         <div class="pl-logo">📐</div>
         <div>
             <div class="pl-title">PRIMELINE CAPITAL</div>
-            <div class="pl-subtitle">AIFM Position Sizer · v2.1 · Methodology v1.1</div>
+            <div class="pl-subtitle">AIFM Position Sizer · v2.2 · Methodology v1.1</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -715,13 +752,14 @@ def main():
 
     st.markdown('<hr class="pl-divider">', unsafe_allow_html=True)
 
-    # ── ② Conviction Scoring & Parameters ────────────────────────────────────
-    st.markdown('<div class="section-label">② Conviction Scoring (§8.3) & Position Parameters</div>', unsafe_allow_html=True)
+    # ── ② Conviction Scoring & Quality Scoring & Parameters ──────────────────
+    st.markdown('<div class="section-label">② Conviction Scoring (§8.3) · Quality Scoring (§9.1) · Position Parameters</div>', unsafe_allow_html=True)
 
     col_conv, col_param = st.columns([4, 5])
 
     with col_conv:
-        st.markdown("**Conviction Score** *(max 100 — §8.3 IC Override)*")
+        # ── Conviction Score (→ position size) ───────────────────────────────
+        st.markdown("**① Conviction Score** *(max 100 — §8.3 · scales position size)*")
         c1s = st.slider("1. Revenue Growth Quality (25)",     0, 25, 15, key="c1",
                         help="Accelerating >20% YoY: 25 | Stable 10-20%: 18 | 0-10%: 10 | Declining: 0")
         c2s = st.slider("2. Competitive Moat / Pricing Power (20)", 0, 20, 12, key="c2",
@@ -744,7 +782,7 @@ def main():
         )
         st.markdown(f"""
         <div class="metric-card" style="margin-top:0.5rem;border-color:#E8B84B33">
-            <div class="label">Conviction Total · Level</div>
+            <div class="label">Conviction Total · Multiplier → <b>Position Size</b></div>
             <div class="value">{conviction_score}/100</div>
             <div class="sub" style="color:#E8B84B">{conv_level}</div>
         </div>""", unsafe_allow_html=True)
@@ -752,6 +790,43 @@ def main():
 
         if conviction_score < 40:
             st.warning("⚠️ Score <40: IC discussion required before opening position (Methodology §8.3)")
+
+        # ── Quality Score (→ stop width) ──────────────────────────────────────
+        st.markdown('<hr class="pl-divider">', unsafe_allow_html=True)
+        st.markdown("**② Quality Score** *(max 100 — §9.1 · widens / tightens stop)*")
+        st.markdown(
+            "<div style='font-size:0.72rem;color:#888;margin-bottom:0.4rem'>"
+            "High-quality businesses earn wider stops — prospective names like CSG "
+            "aren't stopped out on routine vol. Low quality gets tighter risk control."
+            "</div>", unsafe_allow_html=True
+        )
+        q1s = st.slider("1. Balance Sheet Health (20)",        0, 20, 12, key="q1",
+                        help="Net cash / low leverage, high interest coverage: 20 | Modest debt, manageable: 12 | Levered, fragile: 5 | Distressed: 0")
+        q2s = st.slider("2. Earnings Consistency (20)",        0, 20, 12, key="q2",
+                        help="Consistent beats, low earnings variability, FCF ≈ net income: 20 | Moderate consistency: 12 | Lumpy / miss-heavy: 5 | Unpredictable: 0")
+        q3s = st.slider("3. Returns on Capital (20)",          0, 20, 12, key="q3",
+                        help="ROIC/ROE well above sector median, improving trend: 20 | In line with sector: 12 | Below median: 5 | Capital destructive: 0")
+        q4s = st.slider("4. Management & Governance (20)",     0, 20, 12, key="q4",
+                        help="Strong capital allocation track record, meaningful insider ownership: 20 | Competent, neutral: 12 | Questionable decisions: 5 | Poor governance: 0")
+        q5s = st.slider("5. Business Model Resilience (20)",   0, 20, 12, key="q5",
+                        help="Recurring revenues, high switching costs, stable margins through cycles: 20 | Moderate resilience: 12 | Cyclical, margin-volatile: 5 | Highly fragile: 0")
+        quality_score = q1s + q2s + q3s + q4s + q5s
+
+        qual_mult = score_to_mult(quality_score, QUALITY_TABLE)
+        qual_level = (
+            "High Quality (1.20× stop)" if quality_score >= 80 else
+            "Good Quality (1.10× stop)" if quality_score >= 60 else
+            "Standard (1.00× stop)"     if quality_score >= 40 else
+            "Below Avg (0.95× stop)"    if quality_score >= 20 else
+            "Low Quality (0.90× stop)"
+        )
+        st.markdown(f"""
+        <div class="metric-card" style="margin-top:0.5rem;border-color:#3B82F633">
+            <div class="label">Quality Total · Multiplier → <b>Stop Width</b></div>
+            <div class="value">{quality_score}/100</div>
+            <div class="sub" style="color:#60A5FA">{qual_level}</div>
+        </div>""", unsafe_allow_html=True)
+        _progress_bar(quality_score / 100, "#3B82F6")
 
     with col_param:
         st.markdown("**Position Parameters**")
@@ -832,6 +907,8 @@ def main():
         entry_price=entry_price,
         atr14=d["atr14"],
         conviction=conviction_score,
+        quality_score=quality_score,
+        vol_regime=d["vol_regime"],
         pos_type=effective_pos_type,
         tier=tier,
         direction=direction,
@@ -864,12 +941,22 @@ def main():
         price_cls = "price-long" if direction == "Long" else "price-short"
         stop_dir  = "below" if direction == "Long" else "above"
 
-        atr_mult_used = result["atr_mult"]
         flags = []
         if result["floor_clamped"]:
             flags.append("⚠️ Clamped to thesis floor")
         if result["atr_stop_clamped"] and not result["floor_clamped"]:
-            flags.append("⚠️ Hard stop (25%) tighter than ATR stop")
+            flags.append(f"⚠️ Hard stop ({result['hard_stop_pct']:.0f}%) tighter than ATR stop")
+
+        vr_lbl  = vol_regime_label(d["vol_regime"]).split(" (")[0]
+        comp_detail = (
+            f"Base {result['base_atr_mult']}× "
+            f"× vol-regime {result['vr_stop_mult']}× ({vr_lbl}) "
+            f"× quality {result['qual_stop_mult']}× "
+            f"= <b>{result['atr_mult']}× ATR</b>"
+        )
+        hard_stop_sign = "-" if direction == "Long" else "+"
+        hard_stop_ref = f"{hard_stop_sign}{result['hard_stop_pct']:.0f}%"
+        hard_stop_section = "§9.2" if not discretionary else "§7.4 Disc"
 
         st.markdown(f"""
         <div class="stop-box {stop_color_class}">
@@ -879,13 +966,12 @@ def main():
             <div class="{price_cls}">${stop_price:,.4g}</div>
             <div class="detail">
                 {stop_dir.capitalize()} entry by ${result['stop_dist']:,.4g} ({result['stop_dist']/entry_price*100:.1f}%)<br>
-                ATR stop: Entry {"−" if direction == "Long" else "+"} {atr_mult_used}× ATR = ${result['atr_stop_price']:,.4g} (§9.1)<br>
+                ATR stop: Entry {"-" if direction == "Long" else "+"} {comp_detail} = ${result['atr_stop_price']:,.4g}<br>
                 {"<br>".join(flags) if flags else ""}
             </div>
         </div>
         <div class="hard-stop-box">
-            ⛔ §9.2 Hard stop: ${result['hard_stop_price']:,.4g} ({"−" if direction == "Long" else "+"}25% from entry)
-            {"&nbsp;|&nbsp; §7.4 Disc: $" + str(result.get("disc_stop_price","")) if discretionary else ""}
+            ⛔ {hard_stop_section} Hard stop: ${result['hard_stop_price']:,.4g} ({hard_stop_ref} from entry)
         </div>""", unsafe_allow_html=True)
 
         st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
@@ -971,23 +1057,26 @@ def main():
         _progress_bar(min(total_h / 8.0, 1.0), heat_col)
 
     with out_r:
-        st.markdown("**Sizing Breakdown (Methodology Steps 1–6)**")
+        st.markdown("**Sizing Breakdown (Methodology Steps 1–9)**")
         breakdown_data = {
             "Step": [
                 "§8.1 Base risk budget",
                 "§8.1 60d Annualised Vol",
                 "§8.1 Daily Vol",
                 "§8.1 Base Position",
-                "§8.3 Conviction Mult",
+                "§8.3 Conviction Mult → SIZE",
                 "§6.2 Tier Mult",
                 "§4.3 Time Horizon Mult",
                 "Step 5 Adjusted Position",
                 "§8.2 Hard Cap",
                 "Final Position (pre-stress)",
                 "Stress adjustment" if stress_mode else "Market Stress",
-                "§9.1 ATR Mult",
+                "§9.1 Base ATR Mult",
+                "§9.1 Vol Regime Mult → STOP",
+                "§9.1 Quality Mult → STOP",
+                "§9.1 Composite ATR Mult",
                 "§9.1 ATR Stop",
-                "§9.2 25% Hard Stop",
+                f"§{'7.4' if discretionary else '9.2'} Hard Stop",
                 "Effective Stop",
                 "Risk / Share",
                 "Position Risk (heat)",
@@ -1004,9 +1093,12 @@ def main():
                 f"{result['hard_cap_pct']:.0f}% NAV = ${result['hard_cap_usd']:,.0f}",
                 f"${result['final_pos_usd']:,.0f} ({result['pos_pct_nav']:.1f}% NAV)",
                 "0.75× applied" if stress_mode else "Normal (1.00×)",
-                f"{result['atr_mult']}× ({effective_pos_type})",
+                f"{result['base_atr_mult']}× ({effective_pos_type})",
+                f"{result['vr_stop_mult']}× (regime: {vol_regime_label(d['vol_regime']).split(' (')[0]})",
+                f"{result['qual_stop_mult']}× (quality score {quality_score}/100)",
+                f"{result['atr_mult']}× (composite, cap {MAX_COMPOSITE_ATR}×)",
                 f"${result['atr_stop_price']:,.4g}",
-                f"${result['hard_stop_price']:,.4g}",
+                f"${result['hard_stop_price']:,.4g} ({'-' if direction == 'Long' else '+'}{result['hard_stop_pct']:.0f}%)",
                 f"${result['effective_stop']:,.4g}",
                 f"${result['risk_per_share']:,.4g}",
                 f"${result['position_risk']:,.0f} ({result['new_heat_pct']:.2f}% NAV)",
@@ -1036,7 +1128,7 @@ def main():
     with st.expander("☑️ Pre-Trade Checklist (§7.3 — complete before any order)"):
         checks = [
             ("Step 1", "Base position calculated using 60-day annualised vol",                           True),
-            ("Step 2", f"Conviction score recorded in Investment Memorandum ({conviction_score}/100)",   conviction_score > 0),
+            ("Step 2", f"Conviction score recorded in IM ({conviction_score}/100) · Quality score ({quality_score}/100)", conviction_score > 0),
             ("Step 3", f"Tier classification confirmed: {tier}",                                          True),
             ("Step 4", f"Time horizon: {effective_pos_type} ({result['time_mult']}×)",                   True),
             ("Step 5", f"Adjusted position: ${result['adj_pos_usd']:,.0f}",                              True),
@@ -1045,7 +1137,7 @@ def main():
             ("6c",     f"Country: {result['country_after']:.1f}% NAV {'✅' if not result['country_breach'] else '⚠️ BREACH'}",  not result["country_breach"]),
             ("6d",     f"Liquidity: ≤10% of 5d ADV {'✅' if result['liquidity_ok'] else '⚠️ VERIFY'}",  result["liquidity_ok"]),
             ("6e",     f"Cash floor: ≥{20 if stress_mode else 15}% NAV post-trade {'✅' if result['cash_ok'] else '⚠️ BREACH'}", result["cash_ok"]),
-            ("Step 7", f"ATR stop ${result['atr_stop_price']:,.4g} + 25% hard stop ${result['hard_stop_price']:,.4g} logged", True),
+            ("Step 7", f"Composite ATR {result['atr_mult']}× stop ${result['atr_stop_price']:,.4g} + {result['hard_stop_pct']:.0f}% hard stop ${result['hard_stop_price']:,.4g} logged", True),
             ("Step 8", f"Portfolio heat: {result['total_heat_pct']:.2f}% — {result['heat_status'].upper()}",   not result["heat_blocked"]),
             ("Step 9", f"2σ client check: ${result['sigma2_loss']:,.0f} (verify ≤ 1% of smallest client portfolio)", True),
             ("Sign-off", result["signoff"],                                                              True),
@@ -1066,24 +1158,25 @@ def main():
 **Workflow:**
 1. Set **Fund NAV** and **existing portfolio heat** in the sidebar
 2. Type a ticker + select **Long or Short** → click ⚡ Fetch
-3. Score **Conviction** (5 factors, 0-100) per §8.3
-4. Set **entry price**, **position type**, **tier**, **sector/country exposure**, **thesis floor**
-5. Read the output — shares, stop, TP levels, all concentration checks
+3. Score **Conviction** (5 factors, 0-100) — scales position **size** (§8.3)
+4. Score **Quality** (5 factors, 0-100) — scales stop **width** (§9.1 composite)
+5. Set **entry price**, **position type**, **tier**, **sector/country exposure**, **thesis floor**
+6. Read the output — shares, composite stop, TP levels, all concentration checks
 
-**Position sizing formula (Methodology v1.1 §8.1):**
-- Base Position = (0.5% × NAV) ÷ Daily Vol, where Daily Vol = Ann Vol ÷ √252
-- Adjusted = Base × Conviction Mult × Tier Mult × Time Mult
-- Final = min(Adjusted, Hard Cap)
+**Position sizing formula (§8.1):**
+- Base = (0.5% × NAV) ÷ Daily Vol · Adjusted = Base × Conviction × Tier × Time
+- Final = min(Adjusted, Hard Cap) · Caps: 3% standard / 5% Tier 1 IC / 2% Discretionary
 
-**Stop-loss (§9.1):**
-- {"Long" if direction == "Long" else "Short"}: Entry {"−" if direction == "Long" else "+"} (ATR Mult × ATR14)
-- ATR Mult: Extended-Hold/LT Strategic = 3.0×, Core = 2.5×, Tactical = 2.0×
-- 25% hard stop always applies (§9.2)
+**Composite stop-loss (§9.1 + Quality scoring):**
+- Base ATR mult: Extended-Hold/LT Strategic = 3.0×, Core = 2.5×, Tactical = 2.0×
+- × Vol Regime mult: Compressed 0.90× | Normal 1.00× | Elevated 1.15× | Very Elevated 1.30×
+- × Quality mult: Low Quality 0.90× → High Quality 1.20×
+- = Composite ATR Mult (capped at {MAX_COMPOSITE_ATR}×)
+- Hard stop: −25% standard (§9.2) · −20% Discretionary (§7.4)
 
 **Concentration limits:**
-- Single issuer: 3% NAV (5% Tier 1 with IC approval) §8.2
-- Sector: warn 15%, cap 20% §6.3
-- Country: 25-30% developed, 15% EM §6.3
+- Single issuer: 3% NAV (5% Tier 1 with IC) · 2% Discretionary §8.2/§7.4
+- Sector: warn 15%, cap 20% §6.3 · Country: 25-30% developed, 15% EM §6.3
 - Portfolio heat: Green <6%, Amber 6-8% (reduce 25%), Red >8% (no new positions) §10.2
         """)
 
