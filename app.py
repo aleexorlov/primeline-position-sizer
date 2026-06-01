@@ -129,6 +129,32 @@ TIER1_EXCHANGES = {
     "XETRA", "FRANKFURT", "SIX", "SWISS EXCHANGE",
 }
 
+# yfinance exchange codes → canonical names used by calc_tier()
+YF_EXCHANGE_MAP = {
+    # US
+    "NMS": "NASDAQ",  "NGM": "NASDAQ",  "NCM": "NASDAQ",
+    "NYQ": "NYSE",    "NYS": "NYSE",    "ASE": "NYSE",
+    # UK
+    "LSE": "LONDON STOCK EXCHANGE",   "LSI": "LONDON STOCK EXCHANGE",
+    # EU
+    "AMS": "EURONEXT AMSTERDAM",
+    "PAR": "EURONEXT",  "EPA": "EURONEXT",
+    "BRU": "EURONEXT",  "LIS": "EURONEXT",
+    "GER": "XETRA",     "EXX": "XETRA",   "XETR": "XETRA",
+    "FRA": "FRANKFURT",
+    "EBS": "SWISS EXCHANGE",   "VTX": "SWISS EXCHANGE",
+    # Asia-Pacific (not Tier 1 per AIFM §6.2 — will land Tier 2/3 via mkt-cap/ADV)
+    "HKG": "HKEX",
+    "TYO": "TOKYO STOCK EXCHANGE",
+    "SHH": "SHANGHAI",   "SHZ": "SHENZHEN",
+    "KRX": "KOREA STOCK EXCHANGE",
+    "BSE": "BOMBAY STOCK EXCHANGE",
+    "NSE": "NSE INDIA",
+    # Other
+    "TSX": "TORONTO STOCK EXCHANGE",
+    "ASX": "ASX",
+}
+
 FX_PAIRS = {
     "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD",
     "USDCAD", "EURGBP", "EURJPY", "GBPJPY", "USDMXN", "USDZAR",
@@ -230,51 +256,201 @@ def is_fx(ticker: str) -> bool:
     )
 
 
-# ── ALPHA VANTAGE ─────────────────────────────────────────────────────────────
+# ── DATA FETCHING (yfinance primary · Alpha Vantage fallback) ─────────────────
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data(ticker: str, api_key: str) -> dict:
+    """
+    Try yfinance first (no key, global coverage).
+    Fall back to Alpha Vantage if yfinance fails and a key is provided.
+    All prices and ATR values returned in USD regardless of listed currency.
+    """
     ticker = ticker.upper().strip()
+
+    yf_err = None
+    try:
+        return _fetch_yfinance(ticker)
+    except Exception as e:
+        yf_err = e
+
+    if api_key:
+        try:
+            return _fetch_alphavantage(ticker, api_key)
+        except Exception as av_err:
+            raise ValueError(
+                f"Both data sources failed for '{ticker}'.\n"
+                f"yfinance: {yf_err}\n"
+                f"Alpha Vantage: {av_err}"
+            )
+
+    raise ValueError(
+        f"Could not fetch data for '{ticker}': {yf_err}\n\n"
+        "Tips for international stocks:\n"
+        "• HK Exchange: 9880.HK  (UBTECH)\n"
+        "• Xetra/Germany: SAP.DE · RHM.DE\n"
+        "• Swiss Exchange: NESN.SW · UBSG.SW\n"
+        "• London: LLOY.L · BP.L\n"
+        "• Tokyo: 7203.T  (Toyota)\n"
+        "• US: AAPL · PLTR · MSFT (no suffix needed)\n\n"
+        "If the error persists, add an Alpha Vantage key in the sidebar as a fallback."
+    )
+
+
+def _fetch_yfinance(ticker: str) -> dict:
+    """Fetch via yfinance — works for any exchange worldwide."""
+    import yfinance as yf
+
+    fx = is_fx(ticker)
+
+    if fx:
+        # FX via yfinance: EURUSD → EURUSD=X
+        ticker_clean = ticker.replace("/", "").replace("-", "").replace("_", "")
+        yf_symbol = ticker_clean + "=X"
+        yft = yf.Ticker(yf_symbol)
+        hist = yft.history(period="100d", interval="1d", auto_adjust=True)
+        if hist.empty:
+            raise ValueError(f"No FX data for '{ticker}' (tried {yf_symbol})")
+        name     = f"{ticker_clean[:3]}/{ticker_clean[3:]} (FX)"
+        currency = "USD"
+        fx_rate  = 1.0
+        mkt_cap  = 0
+        exchange = ""
+        sector   = ""
+        adv5_shares = 0
+    else:
+        yft  = yf.Ticker(ticker)
+        hist = yft.history(period="100d", interval="1d", auto_adjust=True)
+
+        if hist.empty:
+            raise ValueError(
+                f"No price data returned for '{ticker}'.\n"
+                "For non-US stocks add the exchange suffix:\n"
+                "  HK: 9880.HK · Xetra: SAP.DE · Swiss: NESN.SW · London: BP.L · Tokyo: 7203.T"
+            )
+
+        # Enrich with company info (best-effort — yfinance may throttle .info)
+        name     = ticker
+        currency = "USD"
+        mkt_cap  = 0
+        exchange = ""
+        sector   = ""
+        try:
+            fi       = yft.fast_info
+            currency = getattr(fi, "currency", "USD") or "USD"
+            mkt_cap  = int(getattr(fi, "market_cap", 0) or 0)
+        except Exception:
+            pass
+        try:
+            info     = yft.info
+            name     = info.get("longName") or info.get("shortName") or ticker
+            exchange = info.get("exchange") or ""
+            sector   = info.get("sector") or ""
+            if not mkt_cap:
+                mkt_cap = int(info.get("marketCap") or 0)
+        except Exception:
+            pass
+
+        exchange = YF_EXCHANGE_MAP.get(exchange, exchange)
+
+        # FX conversion: convert local-currency metrics to USD
+        fx_rate = 1.0
+        if currency and currency != "USD":
+            fx_rate = _fetch_fx_rate(currency)
+            mkt_cap = int(mkt_cap * fx_rate)   # USD market cap for tier calc
+
+        adv5_shares = float(hist["Volume"].tail(5).mean()) if "Volume" in hist.columns else 0
+
+    # ── Shared OHLCV calculations ─────────────────────────────────────────────
+    df    = hist.reset_index()
+    close = df["Close"]
+    high  = df["High"]
+    low   = df["Low"]
+
+    if len(df) < 20:
+        raise ValueError(f"Insufficient history for '{ticker}' (only {len(df)} bars returned).")
+
+    price_local = float(close.iloc[-1])
+    prev_local  = float(close.iloc[-2]) if len(close) >= 2 else price_local
+    price_usd   = round(price_local * fx_rate, 4)
+    prev_usd    = prev_local * fx_rate
+
+    day_chg_usd = round(price_usd - prev_usd, 4)
+    day_chg_pct = round((day_chg_usd / prev_usd) * 100, 2) if prev_usd else 0
+
+    prev     = close.shift(1)
+    tr       = (high - low).combine((high - prev).abs(), max).combine((low - prev).abs(), max)
+    atr14_local = float(tr.rolling(14).mean().iloc[-1])
+    atr14_usd   = round(atr14_local * fx_rate, 4)
+
+    vol60 = float(close.pct_change().dropna().tail(60).std() * math.sqrt(252))
+
+    vol_col   = df["Volume"] if "Volume" in df.columns else pd.Series([0] * len(df))
+    adv5      = float(vol_col.tail(5).mean()) if not fx else 0
+    adv60_usd = float(vol_col.tail(60).mean()) * price_usd if not fx else 0
+
+    atr_pct       = tr.rolling(14).mean() / close
+    avg90_atr_pct = float(atr_pct.tail(90).mean())
+    cur_atr_pct   = atr14_local / price_local if price_local else 0
+    vol_regime    = round(cur_atr_pct / avg90_atr_pct, 2) if avg90_atr_pct else 1.0
+
+    tier = calc_tier(mkt_cap, exchange, adv60_usd) if not fx else "N/A (FX)"
+
+    return {
+        "ticker":        ticker,
+        "name":          name,
+        "currency":      currency,
+        "fx_rate":       round(fx_rate, 6),
+        "price":         price_usd,          # USD — used by sizing engine
+        "price_local":   round(price_local, 4),
+        "day_chg":       day_chg_usd,
+        "day_chg_pct":   day_chg_pct,
+        "vol60":         round(vol60, 4),
+        "atr14":         atr14_usd,          # USD — used by sizing engine
+        "atr_pct":       round(cur_atr_pct * 100, 2),
+        "adv5":          int(round(adv5)),
+        "adv60_usd":     round(adv60_usd, 0),
+        "mkt_cap":       mkt_cap,
+        "vol_regime":    vol_regime,
+        "exchange":      exchange,
+        "sector":        sector,
+        "tier":          tier,
+        "is_fx":         fx,
+        "data_source":   "yfinance",
+    }
+
+
+def _fetch_alphavantage(ticker: str, api_key: str) -> dict:
+    """Alpha Vantage fallback — best for US stocks when yfinance is unavailable."""
     ticker_clean = ticker.replace("/", "").replace("-", "")
     fx = is_fx(ticker)
 
     if fx:
         from_cur = ticker_clean[:3]
         to_cur   = ticker_clean[3:]
-        raw = _av_get({
-            "function":    "FX_DAILY",
-            "from_symbol": from_cur,
-            "to_symbol":   to_cur,
-            "outputsize":  "compact",
-            "apikey":      api_key,
-        })
+        raw    = _av_get({"function": "FX_DAILY", "from_symbol": from_cur,
+                          "to_symbol": to_cur, "outputsize": "compact", "apikey": api_key})
         ts_key = "Time Series FX (Daily)"
-        ts     = raw.get(ts_key)
         name   = f"{from_cur}/{to_cur} (FX)"
     else:
-        raw = _av_get({
-            "function":   "TIME_SERIES_DAILY",
-            "symbol":     ticker,
-            "outputsize": "compact",
-            "apikey":     api_key,
-        })
+        raw    = _av_get({"function": "TIME_SERIES_DAILY", "symbol": ticker,
+                          "outputsize": "compact", "apikey": api_key})
         ts_key = "Time Series (Daily)"
-        ts     = raw.get(ts_key)
         name   = ticker
 
+    ts = raw.get(ts_key)
     if not ts:
-        raise ValueError(f"No price data returned for '{ticker}'. Check the ticker symbol.")
+        raise ValueError(f"No price data returned for '{ticker}'.")
 
-    rows = []
-    for d, v in ts.items():
-        rows.append({
+    rows = [
+        {
             "date":   d,
             "close":  float(v.get("4. close", v.get("4. Close", 0))),
             "high":   float(v.get("2. high",  v.get("2. High",  0))),
             "low":    float(v.get("3. low",   v.get("3. Low",   0))),
             "volume": float(v.get("5. volume", 0)),
-        })
-
+        }
+        for d, v in ts.items()
+    ]
     df    = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
     close = df["close"]
     high  = df["high"]
@@ -291,7 +467,6 @@ def fetch_data(ticker: str, api_key: str) -> dict:
     prev  = close.shift(1)
     tr    = (high - low).combine((high - prev).abs(), max).combine((low - prev).abs(), max)
     atr14 = float(tr.rolling(14).mean().iloc[-1])
-
     vol60 = float(close.pct_change().dropna().tail(60).std() * math.sqrt(252))
 
     adv5      = float(df["volume"].tail(5).mean()) if not fx else 0
@@ -305,7 +480,6 @@ def fetch_data(ticker: str, api_key: str) -> dict:
     exchange = ""
     sector   = ""
     mkt_cap  = 0
-
     if not fx:
         time.sleep(1)
         try:
@@ -322,7 +496,10 @@ def fetch_data(ticker: str, api_key: str) -> dict:
     return {
         "ticker":       ticker,
         "name":         name,
+        "currency":     "USD",
+        "fx_rate":      1.0,
         "price":        round(price, 4),
+        "price_local":  round(price, 4),
         "day_chg":      day_chg,
         "day_chg_pct":  day_chg_pct,
         "vol60":        round(vol60, 4),
@@ -336,7 +513,33 @@ def fetch_data(ticker: str, api_key: str) -> dict:
         "sector":       sector,
         "tier":         tier,
         "is_fx":        fx,
+        "data_source":  "alphavantage",
     }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_fx_rate(currency: str) -> float:
+    """Fetch spot rate to USD via yfinance (cached 1 hour)."""
+    import yfinance as yf
+    if currency == "USD":
+        return 1.0
+    symbol = f"{currency}USD=X"
+    try:
+        hist = yf.Ticker(symbol).history(period="2d", interval="1d", auto_adjust=True)
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+    except Exception:
+        pass
+    # Last resort: try inverse
+    try:
+        inv_symbol = f"USD{currency}=X"
+        hist = yf.Ticker(inv_symbol).history(period="2d", interval="1d", auto_adjust=True)
+        if not hist.empty:
+            rate = float(hist["Close"].iloc[-1])
+            return round(1.0 / rate, 6) if rate else 1.0
+    except Exception:
+        pass
+    return 1.0   # graceful fallback: prices treated as USD
 
 
 def _av_get(params: dict) -> dict:
@@ -562,15 +765,22 @@ def size_position(
 
 def sidebar():
     with st.sidebar:
-        st.markdown('<div class="section-label">🔑 API Configuration</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">📡 Data Source</div>', unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-size:0.72rem;color:#888;margin-bottom:0.4rem'>"
+            "Primary: <b style='color:#2ECC71'>yfinance</b> — no key needed, global coverage.<br>"
+            "Supports any exchange: <code>9880.HK</code> · <code>SAP.DE</code> · <code>NESN.SW</code> · <code>BP.L</code><br>"
+            "Alpha Vantage key is optional (US stocks fallback only)."
+            "</div>", unsafe_allow_html=True
+        )
         import os
         _default_key = st.session_state.get("av_api_key",
             st.secrets.get("AV_API_KEY", "") if hasattr(st, "secrets") else os.environ.get("AV_API_KEY", ""))
         api_key = st.text_input(
-            "Alpha Vantage API Key",
+            "Alpha Vantage Key (optional fallback)",
             value=_default_key,
             type="password",
-            help="Free key: alphavantage.co/support/#api-key (25 req/day)",
+            help="Only used if yfinance fails. Free key: alphavantage.co/support/#api-key (25 req/day)",
         )
         if api_key:
             st.session_state["av_api_key"] = api_key
@@ -647,7 +857,7 @@ def main():
     with col_input:
         ticker = st.text_input(
             "Ticker / FX Pair",
-            placeholder="AAPL · MSFT · PLTR · EURUSD · HD …",
+            placeholder="US: PLTR · AAPL   |   HK: 9880.HK   |   EU: SAP.DE · NESN.SW · BP.L",
             value=st.session_state.get("ticker", ""),
             label_visibility="collapsed",
         )
@@ -665,16 +875,13 @@ def main():
     dir_badge = f'<span class="direction-badge badge-{"long" if direction == "Long" else "short"}">{direction}</span>'
 
     if fetch_btn and ticker:
-        if not api_key:
-            st.error("⛔ Enter your Alpha Vantage API key in the sidebar first.")
-            st.stop()
         st.session_state["ticker"]    = ticker.upper().strip()
         st.session_state["direction"] = direction
         with st.spinner(f"Fetching {ticker.upper()} market data…"):
             try:
                 data = fetch_data(ticker, api_key)
                 st.session_state["market_data"] = data
-                st.session_state["entry_price"] = data["price"]
+                st.session_state["entry_price"] = data["price"]  # USD
             except Exception as exc:
                 st.error(f"⛔ {exc}")
                 st.session_state.pop("market_data", None)
@@ -694,11 +901,20 @@ def main():
     chg_sign  = "+" if d["day_chg"] >= 0 else ""
 
     with c1:
+        local_note = ""
+        if d.get("currency", "USD") != "USD":
+            local_note = f"<div class='sub' style='color:#888'>{d['currency']} {d['price_local']:,.4g} @ {d['fx_rate']:.4f}</div>"
+        src_badge = (
+            "<span style='font-size:0.6rem;color:#2ECC71;margin-left:4px'>yf</span>"
+            if d.get("data_source") == "yfinance"
+            else "<span style='font-size:0.6rem;color:#888;margin-left:4px'>av</span>"
+        )
         st.markdown(f"""
         <div class="metric-card accent">
-            <div class="label">{d['ticker']} · Last Close</div>
+            <div class="label">{d['ticker']} · Last Close (USD){src_badge}</div>
             <div class="value">${d['price']:,.4g}</div>
             <div class="sub" style="color:{chg_color}">{chg_sign}{d['day_chg']:,.4g} ({chg_sign}{d['day_chg_pct']:.2f}%)</div>
+            {local_note}
         </div>""", unsafe_allow_html=True)
     with c2:
         st.markdown(f"""
@@ -1205,8 +1421,9 @@ def _render_empty_state():
         <div style="font-size:3rem;margin-bottom:1rem">📐</div>
         <div style="font-size:1.1rem;color:#888;margin-bottom:0.5rem">Enter a ticker and click <b style="color:#E8B84B">⚡ Fetch</b> to begin sizing</div>
         <div style="font-size:0.8rem;color:#555">
-        Equities: AAPL · MSFT · HD · PLTR · CSG1 &nbsp;|&nbsp; FX: EURUSD · GBPUSD · USDJPY<br>
-        Select Long or Short before fetching
+        US: AAPL · PLTR · MSFT · HD &nbsp;|&nbsp; HK: 9880.HK (UBTECH) · 0700.HK (Tencent)<br>
+        EU: SAP.DE · RHM.DE · NESN.SW · BP.L &nbsp;|&nbsp; FX: EURUSD · GBPUSD · USDJPY<br>
+        Non-USD prices auto-converted to USD for sizing
         </div>
     </div>
     """, unsafe_allow_html=True)
