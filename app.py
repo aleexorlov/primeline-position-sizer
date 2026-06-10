@@ -258,7 +258,7 @@ def is_fx(ticker: str) -> bool:
 
 # ── DATA FETCHING (yfinance primary · Alpha Vantage fallback) ─────────────────
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_data(ticker: str, api_key: str) -> dict:
     """
     Try yfinance first (no key, global coverage).
@@ -410,6 +410,17 @@ def _fetch_yfinance(ticker: str) -> dict:
 
     price_local = float(close.iloc[-1])
     prev_local  = float(close.iloc[-2]) if len(close) >= 2 else price_local
+
+    # yfinance daily bars can lag a session behind. Pull the live/most-recent
+    # quote and use it whenever it's newer than the last daily bar.
+    try:
+        live = float(getattr(yft.fast_info, "last_price", 0) or 0)
+    except Exception:
+        live = 0.0
+    if live > 0 and price_local > 0 and abs(live - price_local) / price_local > 0.0005:
+        prev_local  = price_local   # last completed bar becomes the reference close
+        price_local = live
+
     price_usd   = round(price_local * fx_rate, 4)
     prev_usd    = prev_local * fx_rate
 
@@ -959,7 +970,7 @@ def main():
         )
         st.markdown(f"""
         <div class="metric-card accent">
-            <div class="label">{d['ticker']} · Last Close (USD){src_badge}</div>
+            <div class="label">{d['ticker']} · Last Price (USD){src_badge}</div>
             <div class="value">${d['price']:,.4g}</div>
             <div class="sub" style="color:{chg_color}">{chg_sign}{d['day_chg']:,.4g} ({chg_sign}{d['day_chg_pct']:.2f}%)</div>
             {local_note}
