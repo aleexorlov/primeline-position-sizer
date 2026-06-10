@@ -24,98 +24,134 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
+
+/* ── Terminal base ──────────────────────────────────────────────────────── */
+html, body, .stApp, [data-testid="stAppViewContainer"],
+.stMarkdown, p, div, span, label, input, button, select, textarea,
+[data-testid="stSidebar"], [data-testid="stHeader"] {
+    font-family: 'IBM Plex Mono', 'SF Mono', Menlo, Consolas, monospace !important;
+}
+.stApp { background: #000000; }
+[data-testid="stSidebar"] { background: #050505; border-right: 1px solid #1F1F1F; }
+[data-testid="stHeader"] { background: #000000; }
+
+/* Square corners on all Streamlit widgets */
+.stButton > button, .stTextInput input, .stNumberInput input,
+.stSelectbox [data-baseweb="select"] > div, [data-baseweb="input"],
+[data-testid="stExpander"] { border-radius: 0 !important; }
+
+.stButton > button {
+    background: #FFA028 !important; color: #000000 !important;
+    border: 1px solid #FFA028 !important; font-weight: 700 !important;
+    letter-spacing: 0.08em; text-transform: uppercase; font-size: 0.78rem !important;
+}
+.stButton > button:hover { background: #000000 !important; color: #FFA028 !important; }
+
+.stTextInput input, .stNumberInput input {
+    background: #0A0A0A !important; border: 1px solid #1F1F1F !important;
+    color: #FFA028 !important; font-weight: 600;
+}
+.stTextInput input:focus, .stNumberInput input:focus { border-color: #FFA028 !important; }
+
+[data-testid="stExpander"] { border: 1px solid #1F1F1F !important; background: #050505; }
+
+/* ── Header: terminal top bar ───────────────────────────────────────────── */
 .pl-header {
-    background: linear-gradient(135deg, #1A1D27 0%, #12141E 100%);
-    border-bottom: 2px solid #E8B84B;
-    padding: 1.2rem 2rem;
-    margin: -1rem -1rem 2rem -1rem;
+    background: #000000;
+    border-top: 2px solid #FFA028;
+    border-bottom: 1px solid #1F1F1F;
+    padding: 0.9rem 1.5rem;
+    margin: -1rem -1rem 1.5rem -1rem;
     display: flex; align-items: center; gap: 1rem;
 }
-.pl-logo { font-size: 1.7rem; }
-.pl-title { font-size: 1.3rem; font-weight: 700; color: #E8B84B; letter-spacing: 0.04em; }
-.pl-subtitle { font-size: 0.75rem; color: #888; letter-spacing: 0.1em; text-transform: uppercase; }
+.pl-logo {
+    font-size: 1rem; color: #000; background: #FFA028;
+    padding: 0.15rem 0.5rem; font-weight: 700; letter-spacing: 0.05em;
+}
+.pl-title { font-size: 1.05rem; font-weight: 700; color: #FFA028; letter-spacing: 0.18em; }
+.pl-subtitle { font-size: 0.62rem; color: #6A6A6A; letter-spacing: 0.16em; text-transform: uppercase; }
 
+/* ── Section labels: inverted terminal tabs ─────────────────────────────── */
 .section-label {
-    font-size: 0.65rem; font-weight: 700; letter-spacing: 0.14em;
-    text-transform: uppercase; color: #E8B84B; margin-bottom: 0.5rem;
-    border-bottom: 1px solid #2A2D3A; padding-bottom: 0.3rem;
+    display: inline-block;
+    font-size: 0.62rem; font-weight: 700; letter-spacing: 0.16em;
+    text-transform: uppercase; color: #000000; background: #FFA028;
+    padding: 0.18rem 0.6rem; margin-bottom: 0.6rem;
 }
 
+/* ── Data panels: flat, square, dense ───────────────────────────────────── */
 .metric-card {
-    background: #1A1D27; border: 1px solid #2A2D3A; border-radius: 8px;
-    padding: 0.9rem 1.1rem; margin-bottom: 0.5rem;
+    background: #050505; border: 1px solid #1F1F1F;
+    padding: 0.7rem 0.9rem; margin-bottom: 0.4rem;
 }
-.metric-card .label { font-size: 0.68rem; color: #888; letter-spacing: 0.08em; text-transform: uppercase; }
-.metric-card .value { font-size: 1.5rem; font-weight: 700; color: #E8E8E8; line-height: 1.2; }
-.metric-card .sub { font-size: 0.78rem; color: #aaa; margin-top: 0.15rem; }
-.metric-card.accent { border-color: #E8B84B33; background: linear-gradient(135deg, #1A1D27, #1E1B10); }
-.metric-card.green { border-color: #2ECC7133; }
-.metric-card.red { border-color: #E74C3C33; }
-.metric-card.warn { border-color: #F39C1233; }
-.metric-card.short-card { border-color: #A855F733; }
+.metric-card .label { font-size: 0.6rem; color: #6A6A6A; letter-spacing: 0.1em; text-transform: uppercase; }
+.metric-card .value { font-size: 1.35rem; font-weight: 600; color: #D6D6D6; line-height: 1.25; }
+.metric-card .sub { font-size: 0.7rem; color: #8A8A8A; margin-top: 0.1rem; }
+.metric-card.accent { border-color: #FFA028; border-left-width: 3px; }
+.metric-card.green { border-left: 3px solid #00D964; }
+.metric-card.red { border-left: 3px solid #FF433D; }
+.metric-card.warn { border-left: 3px solid #FFB000; }
+.metric-card.short-card { border-left: 3px solid #00C2FF; }
 
-.stop-box {
-    border-radius: 8px; padding: 1rem 1.2rem;
-}
-.stop-box-long { background: linear-gradient(135deg, #1E1015, #1A0D12); border: 1px solid #E74C3C55; }
-.stop-box-short { background: linear-gradient(135deg, #0D1020, #0A0D1E); border: 1px solid #A855F755; }
-.stop-box .price-long { font-size: 2rem; font-weight: 700; color: #E74C3C; }
-.stop-box .price-short { font-size: 2rem; font-weight: 700; color: #A855F7; }
-.stop-box .detail { font-size: 0.78rem; color: #aaa; margin-top: 0.3rem; }
+.stop-box { padding: 0.8rem 1rem; background: #050505; }
+.stop-box-long { border: 1px solid #1F1F1F; border-left: 3px solid #FF433D; }
+.stop-box-short { border: 1px solid #1F1F1F; border-left: 3px solid #00C2FF; }
+.stop-box .price-long { font-size: 1.7rem; font-weight: 700; color: #FF433D; }
+.stop-box .price-short { font-size: 1.7rem; font-weight: 700; color: #00C2FF; }
+.stop-box .detail { font-size: 0.7rem; color: #8A8A8A; margin-top: 0.3rem; }
 
 .hard-stop-box {
-    background: #1A0A0A; border: 1px dashed #E74C3C88; border-radius: 6px;
-    padding: 0.5rem 0.8rem; margin-top: 0.4rem; font-size: 0.78rem; color: #E74C3C;
+    background: #050505; border: 1px dashed #FF433D66;
+    padding: 0.4rem 0.7rem; margin-top: 0.4rem; font-size: 0.7rem; color: #FF433D;
 }
 
-.tp-row { display: flex; gap: 0.5rem; margin-top: 0.4rem; }
-.tp-chip {
-    flex: 1; text-align: center; border-radius: 6px; padding: 0.5rem 0.3rem;
-}
-.tp-chip-long { background: #0D1E14; border: 1px solid #2ECC7155; }
-.tp-chip-short { background: #150D20; border: 1px solid #A855F755; }
-.tp-chip .r { font-size: 0.65rem; font-weight: 700; }
-.tp-chip-long .r { color: #2ECC71; }
-.tp-chip-short .r { color: #A855F7; }
-.tp-chip .price { font-size: 1rem; font-weight: 700; color: #E8E8E8; }
-.tp-chip .pct { font-size: 0.7rem; color: #aaa; }
+.tp-row { display: flex; gap: 0.35rem; margin-top: 0.4rem; }
+.tp-chip { flex: 1; text-align: center; padding: 0.45rem 0.3rem; background: #050505; }
+.tp-chip-long { border: 1px solid #1F1F1F; border-top: 2px solid #00D964; }
+.tp-chip-short { border: 1px solid #1F1F1F; border-top: 2px solid #00C2FF; }
+.tp-chip .r { font-size: 0.6rem; font-weight: 700; }
+.tp-chip-long .r { color: #00D964; }
+.tp-chip-short .r { color: #00C2FF; }
+.tp-chip .price { font-size: 0.95rem; font-weight: 600; color: #D6D6D6; }
+.tp-chip .pct { font-size: 0.65rem; color: #8A8A8A; }
 
-.heat-bar-wrap { background: #1A1D27; border-radius: 6px; overflow: hidden; height: 8px; margin-top: 6px; }
-.heat-bar { height: 8px; border-radius: 6px; }
+.heat-bar-wrap { background: #0F0F0F; border: 1px solid #1F1F1F; overflow: hidden; height: 6px; margin-top: 6px; }
+.heat-bar { height: 6px; }
 
 .info-box {
-    background: #1A1D27; border-left: 3px solid #E8B84B;
-    padding: 0.7rem 1rem; border-radius: 0 6px 6px 0;
-    font-size: 0.8rem; color: #ccc; margin: 0.5rem 0;
+    background: #050505; border: 1px solid #1F1F1F; border-left: 3px solid #FFA028;
+    padding: 0.55rem 0.9rem; font-size: 0.72rem; color: #A8A8A8; margin: 0.5rem 0;
 }
 
 .cap-row {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 0.35rem 0.7rem; border-radius: 5px; margin-bottom: 0.3rem; font-size: 0.8rem;
+    padding: 0.3rem 0.6rem; margin-bottom: 0.25rem; font-size: 0.72rem;
+    background: #050505;
 }
-.cap-pass { background: #0D1E14; border: 1px solid #2ECC7122; color: #2ECC71; }
-.cap-warn { background: #1E1500; border: 1px solid #F39C1222; color: #F39C12; }
-.cap-fail { background: #1E0808; border: 1px solid #E74C3C44; color: #E74C3C; }
+.cap-pass { border: 1px solid #1F1F1F; border-left: 3px solid #00D964; color: #00D964; }
+.cap-warn { border: 1px solid #1F1F1F; border-left: 3px solid #FFB000; color: #FFB000; }
+.cap-fail { border: 1px solid #1F1F1F; border-left: 3px solid #FF433D; color: #FF433D; }
 
 .checklist-item {
     display: flex; gap: 0.5rem; align-items: flex-start;
-    padding: 0.3rem 0; font-size: 0.8rem; color: #ccc; border-bottom: 1px solid #1A1D27;
+    padding: 0.28rem 0; font-size: 0.72rem; color: #A8A8A8; border-bottom: 1px solid #111111;
 }
 
 .direction-badge {
-    display: inline-block; padding: 0.15rem 0.6rem; border-radius: 4px;
-    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em; margin-left: 0.4rem;
+    display: inline-block; padding: 0.1rem 0.5rem;
+    font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em; margin-left: 0.4rem;
 }
-.badge-long { background: #0D2010; color: #2ECC71; border: 1px solid #2ECC71; }
-.badge-short { background: #15082A; color: #A855F7; border: 1px solid #A855F7; }
+.badge-long { background: #00D964; color: #000000; }
+.badge-short { background: #00C2FF; color: #000000; }
 
-.badge { display: inline-block; padding: 0.2rem 0.7rem; border-radius: 20px;
-    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em; }
-.badge-t1 { background: #0D3320; color: #2ECC71; border: 1px solid #2ECC71; }
-.badge-t2 { background: #1A2A10; color: #A8E063; border: 1px solid #A8E063; }
-.badge-t3 { background: #2A1A08; color: #E8A430; border: 1px solid #E8A430; }
+.badge { display: inline-block; padding: 0.12rem 0.55rem;
+    font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em; }
+.badge-t1 { background: #00D964; color: #000000; }
+.badge-t2 { background: #0A0A0A; color: #00D964; border: 1px solid #00D964; }
+.badge-t3 { background: #0A0A0A; color: #FFB000; border: 1px solid #FFB000; }
 
-.pl-divider { border: none; border-top: 1px solid #2A2D3A; margin: 1.2rem 0; }
+.pl-divider { border: none; border-top: 1px solid #1F1F1F; margin: 1rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -824,10 +860,10 @@ def size_position(
 
 def sidebar():
     with st.sidebar:
-        st.markdown('<div class="section-label">📡 Data Source</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">DATA SOURCE</div>', unsafe_allow_html=True)
         st.markdown(
             "<div style='font-size:0.72rem;color:#888;margin-bottom:0.4rem'>"
-            "Primary: <b style='color:#2ECC71'>yfinance</b> — no key needed, global coverage.<br>"
+            "Primary: <b style='color:#00D964'>yfinance</b> — no key needed, global coverage.<br>"
             "Supports any exchange: <code>9880.HK</code> · <code>SAP.DE</code> · <code>NESN.SW</code> · <code>BP.L</code><br>"
             "Alpha Vantage key is optional (US stocks fallback only)."
             "</div>", unsafe_allow_html=True
@@ -845,7 +881,7 @@ def sidebar():
             st.session_state["av_api_key"] = api_key
 
         st.markdown('<hr class="pl-divider">', unsafe_allow_html=True)
-        st.markdown('<div class="section-label">📊 Fund Settings</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">FUND SETTINGS</div>', unsafe_allow_html=True)
 
         nav = st.number_input(
             "Fund NAV (USD)",
@@ -857,7 +893,7 @@ def sidebar():
 
         st.markdown(
             f"<div style='font-size:0.72rem;color:#888;margin-top:-0.3rem'>Risk budget per trade: "
-            f"<b style='color:#E8B84B'>0.5% NAV = ${nav * 0.005:,.0f}</b> (fixed §8.1)</div>",
+            f"<b style='color:#FFA028'>0.5% NAV = ${nav * 0.005:,.0f}</b> (fixed §8.1)</div>",
             unsafe_allow_html=True
         )
 
@@ -870,12 +906,12 @@ def sidebar():
         )
         st.session_state["portfolio_heat"] = portfolio_heat
 
-        heat_col = "#2ECC71" if portfolio_heat < 6.0 else "#F39C12" if portfolio_heat < 8.0 else "#E74C3C"
+        heat_col = "#00D964" if portfolio_heat < 6.0 else "#FFB000" if portfolio_heat < 8.0 else "#FF433D"
         heat_lbl = "🟢 Green — Normal" if portfolio_heat < 6.0 else "🟡 Amber — Warning" if portfolio_heat < 8.0 else "🔴 Red — Hard Stop"
         st.markdown(f"<div style='font-size:0.72rem;color:{heat_col};margin-top:-0.3rem'>{heat_lbl}</div>", unsafe_allow_html=True)
 
         st.markdown('<hr class="pl-divider">', unsafe_allow_html=True)
-        st.markdown('<div class="section-label">⚠️ Market Conditions</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">MARKET CONDITIONS</div>', unsafe_allow_html=True)
         stress_mode = st.toggle("🔴 Market Stress Mode", value=False,
             help="VIX>25, S&P -8% from 60d high, credit spreads +50bps, NAV -4% from monthly high (2+ conditions, 3+ days). Triggers: 0.75× size, 20% cash floor.")
         st.session_state["stress_mode"] = stress_mode
@@ -884,12 +920,13 @@ def sidebar():
 
         st.markdown('<hr class="pl-divider">', unsafe_allow_html=True)
         st.markdown("""
-        <div style="font-size:0.7rem;color:#666;line-height:1.6">
-        <b style="color:#888">Primeline Capital OÜ</b><br>
-        AIFM Position Sizer v2.1<br>
-        Methodology v1.1 · §4, §6.2, §7, §8, §9, §10<br><br>
-        Data: Alpha Vantage (free tier)<br>
-        Delay: ~15 min. Not for HFT.
+        <div style="font-size:0.62rem;color:#555;line-height:1.8;letter-spacing:0.04em">
+        <b style="color:#FFA028">PRIMELINE CAPITAL OÜ</b><br>
+        POSITION SIZER v2.2 // METHODOLOGY v1.1<br>
+        AIFM §4 · §6.2 · §7 · §8 · §9 · §10<br>
+        ─────────────────────<br>
+        DATA: YFINANCE (PRIMARY) · AV (FALLBACK)<br>
+        DELAYED QUOTES · NOT FOR HFT
         </div>
         """, unsafe_allow_html=True)
 
@@ -901,10 +938,10 @@ def sidebar():
 def main():
     st.markdown("""
     <div class="pl-header">
-        <div class="pl-logo">📐</div>
+        <div class="pl-logo">PLC</div>
         <div>
             <div class="pl-title">PRIMELINE CAPITAL</div>
-            <div class="pl-subtitle">AIFM Position Sizer · v2.2 · Methodology v1.1</div>
+            <div class="pl-subtitle">&gt;_ POSITION SIZER v2.2 // AIFM METHODOLOGY v1.1 // FINANTSINSPEKTSIOON</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -928,9 +965,9 @@ def main():
             label_visibility="collapsed",
         )
     with col_btn:
-        fetch_btn = st.button("⚡ Fetch", use_container_width=True, type="primary")
+        fetch_btn = st.button("FETCH ▸", use_container_width=True, type="primary")
 
-    dir_color = "#2ECC71" if direction == "Long" else "#A855F7"
+    dir_color = "#00D964" if direction == "Long" else "#00C2FF"
     dir_badge = f'<span class="direction-badge badge-{"long" if direction == "Long" else "short"}">{direction}</span>'
 
     if fetch_btn and ticker:
@@ -956,7 +993,7 @@ def main():
     st.markdown(f'<div class="section-label">① Market Data {dir_badge}</div>', unsafe_allow_html=True)
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    chg_color = "#2ECC71" if d["day_chg"] >= 0 else "#E74C3C"
+    chg_color = "#00D964" if d["day_chg"] >= 0 else "#FF433D"
     chg_sign  = "+" if d["day_chg"] >= 0 else ""
 
     with c1:
@@ -964,7 +1001,7 @@ def main():
         if d.get("currency", "USD") != "USD":
             local_note = f"<div class='sub' style='color:#888'>{d['currency']} {d['price_local']:,.4g} @ {d['fx_rate']:.4f}</div>"
         src_badge = (
-            "<span style='font-size:0.6rem;color:#2ECC71;margin-left:4px'>yf</span>"
+            "<span style='font-size:0.6rem;color:#00D964;margin-left:4px'>yf</span>"
             if d.get("data_source") == "yfinance"
             else "<span style='font-size:0.6rem;color:#888;margin-left:4px'>av</span>"
         )
@@ -991,7 +1028,7 @@ def main():
         </div>""", unsafe_allow_html=True)
     with c4:
         vr = d['vol_regime']
-        vr_col = "#E74C3C" if vr >= 1.5 else "#F39C12" if vr >= 1.2 else "#2ECC71" if vr < 0.8 else "#E8E8E8"
+        vr_col = "#FF433D" if vr >= 1.5 else "#FFB000" if vr >= 1.2 else "#00D964" if vr < 0.8 else "#E8E8E8"
         st.markdown(f"""
         <div class="metric-card">
             <div class="label">Vol Regime Ratio</div>
@@ -1020,7 +1057,7 @@ def main():
     if not d["is_fx"]:
         st.markdown(f"""
         <div class="info-box">
-        📍 <b>{d['name']}</b> &nbsp;·&nbsp; {d['sector'] or 'Sector N/A'} &nbsp;·&nbsp;
+        ▪ <b>{d['name'].upper()}</b> &nbsp;·&nbsp; {d['sector'] or 'Sector N/A'} &nbsp;·&nbsp;
         5-Day ADV: <b>{d['adv5']:,} shares</b> &nbsp;·&nbsp;
         60d ADV: <b>${d['adv60_usd']/1e6:.1f}M/day</b>
         </div>""", unsafe_allow_html=True)
@@ -1056,12 +1093,12 @@ def main():
             "Minimal (0.50×) ⚠️ Reconsider entry"
         )
         st.markdown(f"""
-        <div class="metric-card" style="margin-top:0.5rem;border-color:#E8B84B33">
+        <div class="metric-card" style="margin-top:0.5rem;border-color:#FFA02833">
             <div class="label">Conviction Total · Multiplier → <b>Position Size</b></div>
             <div class="value">{conviction_score}/100</div>
-            <div class="sub" style="color:#E8B84B">{conv_level}</div>
+            <div class="sub" style="color:#FFA028">{conv_level}</div>
         </div>""", unsafe_allow_html=True)
-        _progress_bar(conviction_score / 100, "#E8B84B")
+        _progress_bar(conviction_score / 100, "#FFA028")
 
         if conviction_score < 40:
             st.warning("⚠️ Score <40: IC discussion required before opening position (Methodology §8.3)")
@@ -1235,7 +1272,7 @@ def main():
 
         st.markdown(f"""
         <div class="stop-box {stop_color_class}">
-            <div class="label" style="font-size:0.68rem;color:#E74C3C;letter-spacing:0.1em;text-transform:uppercase;font-weight:700">
+            <div class="label" style="font-size:0.68rem;color:#FF433D;letter-spacing:0.1em;text-transform:uppercase;font-weight:700">
                 {"Stop-Loss" if direction == "Long" else "Buy-to-Cover Stop"}
             </div>
             <div class="{price_cls}">${stop_price:,.4g}</div>
@@ -1258,7 +1295,7 @@ def main():
         st.markdown(f"""
         <div class="metric-card {"green" if direction == "Long" else "short-card"}">
             <div class="label">{shares_label}</div>
-            <div class="value" style="color:{"#2ECC71" if direction == "Long" else "#A855F7"}">{shares:,}</div>
+            <div class="value" style="color:{"#00D964" if direction == "Long" else "#00C2FF"}">{shares:,}</div>
             <div class="sub">Value: {pos_display} ({result['pos_pct_nav']:.1f}% NAV)</div>
         </div>""", unsafe_allow_html=True)
 
@@ -1296,7 +1333,7 @@ def main():
         _cap_row(f"Sector after trade: {result['sector_after']:.1f}% NAV",
                  "⛔ Breach >20%" if result["sector_breach"] else ("⚠️ Warn >15%" if result["sector_warn"] else "✅ OK"),
                  "fail" if result["sector_breach"] else ("warn" if result["sector_warn"] else "pass"))
-        _progress_bar(result["sector_after"] / 20, "#E74C3C" if result["sector_breach"] else "#F39C12" if result["sector_warn"] else "#2ECC71")
+        _progress_bar(result["sector_after"] / 20, "#FF433D" if result["sector_breach"] else "#FFB000" if result["sector_warn"] else "#00D964")
 
         _cap_row(f"Country after trade: {result['country_after']:.1f}% NAV",
                  "⛔ >30% (developed)" if result["country_breach"] else "✅ OK",
@@ -1321,7 +1358,7 @@ def main():
         # Portfolio heat gauge
         st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
         total_h = result["total_heat_pct"]
-        heat_col_map = {"green": "#2ECC71", "amber": "#F39C12", "red": "#E74C3C"}
+        heat_col_map = {"green": "#00D964", "amber": "#FFB000", "red": "#FF433D"}
         heat_col = heat_col_map[result["heat_status"]]
         st.markdown(f"""
         <div class="metric-card" style="border-color:{heat_col}33">
@@ -1400,7 +1437,7 @@ def main():
             st.info("🔵 **Tier 1 IC Approval Required** — position >3% NAV in Tier 1 issuer requires 2-of-3 principal sign-off (§8.2)")
 
     # ── Pre-Trade Checklist ────────────────────────────────────────────────────
-    with st.expander("☑️ Pre-Trade Checklist (§7.3 — complete before any order)"):
+    with st.expander("PRE-TRADE CHECKLIST · §7.3 — COMPLETE BEFORE ANY ORDER"):
         checks = [
             ("Step 1", "Base position calculated using 60-day annualised vol",                           True),
             ("Step 2", f"Conviction score recorded in IM ({conviction_score}/100) · Quality score ({quality_score}/100)", conviction_score > 0),
@@ -1420,7 +1457,7 @@ def main():
         ]
         for ref, label, ok in checks:
             icon = "✅" if ok is True else ("❌" if ok is False else "☐")
-            color = "#2ECC71" if ok is True else ("#E74C3C" if ok is False else "#888")
+            color = "#00D964" if ok is True else ("#FF433D" if ok is False else "#888")
             st.markdown(f"""
             <div class="checklist-item">
                 <span style="color:{color};font-weight:700;min-width:2rem">{icon}</span>
@@ -1428,7 +1465,7 @@ def main():
                 <span>{label}</span>
             </div>""", unsafe_allow_html=True)
 
-    with st.expander("📖 How to use this tool"):
+    with st.expander("OPERATOR MANUAL · HOW TO USE THIS TOOL"):
         st.markdown(f"""
 **Workflow:**
 1. Set **Fund NAV** and **existing portfolio heat** in the sidebar
@@ -1458,7 +1495,7 @@ def main():
 
 # ── UI HELPERS ────────────────────────────────────────────────────────────────
 
-def _progress_bar(fraction: float, color: str = "#E8B84B"):
+def _progress_bar(fraction: float, color: str = "#FFA028"):
     pct = min(max(fraction * 100, 0), 100)
     st.markdown(f"""
     <div class="heat-bar-wrap">
@@ -1476,13 +1513,15 @@ def _cap_row(label: str, status: str, level: str):
 
 def _render_empty_state():
     st.markdown("""
-    <div style="text-align:center;padding:4rem 2rem;color:#555">
-        <div style="font-size:3rem;margin-bottom:1rem">📐</div>
-        <div style="font-size:1.1rem;color:#888;margin-bottom:0.5rem">Enter a ticker and click <b style="color:#E8B84B">⚡ Fetch</b> to begin sizing</div>
-        <div style="font-size:0.8rem;color:#555">
-        US: AAPL · PLTR · MSFT · HD &nbsp;|&nbsp; HK: 9880.HK (UBTECH) · 0700.HK (Tencent)<br>
-        EU: SAP.DE · RHM.DE · NESN.SW · BP.L &nbsp;|&nbsp; FX: EURUSD · GBPUSD · USDJPY<br>
-        Non-USD prices auto-converted to USD for sizing
+    <div style="border:1px solid #1F1F1F;background:#050505;padding:2.5rem 2rem;margin-top:1rem;text-align:center">
+        <div style="font-size:0.9rem;color:#FFA028;letter-spacing:0.1em;margin-bottom:0.8rem">&gt;_ AWAITING TICKER INPUT</div>
+        <div style="font-size:0.78rem;color:#8A8A8A;margin-bottom:1rem">ENTER SYMBOL AND EXECUTE <b style="color:#FFA028">[FETCH]</b> TO INITIALISE SIZING SEQUENCE</div>
+        <div style="font-size:0.68rem;color:#555;letter-spacing:0.04em;line-height:1.9">
+        US&nbsp;&nbsp;: AAPL · PLTR · MSFT · HD<br>
+        HK&nbsp;&nbsp;: 9880.HK (UBTECH) · 0700.HK (TENCENT)<br>
+        EU&nbsp;&nbsp;: SAP.DE · RHM.DE · NESN.SW · BP.L<br>
+        FX&nbsp;&nbsp;: EURUSD · GBPUSD · USDJPY<br>
+        <span style="color:#444">NON-USD PRICES AUTO-CONVERTED TO USD</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
