@@ -262,38 +262,75 @@ def is_fx(ticker: str) -> bool:
 def fetch_data(ticker: str, api_key: str) -> dict:
     """
     Try yfinance first (no key, global coverage).
-    Fall back to Alpha Vantage if yfinance fails and a key is provided.
-    All prices and ATR values returned in USD regardless of listed currency.
+    Auto-probes exchange suffixes when the bare ticker returns nothing.
+    Falls back to Alpha Vantage if all yfinance attempts fail and a key is provided.
+    All prices/ATR values returned in USD regardless of listed currency.
     """
     ticker = ticker.upper().strip()
 
-    yf_err = None
-    try:
-        return _fetch_yfinance(ticker)
-    except Exception as e:
-        yf_err = e
+    # Build candidate ticker list: bare ticker first, then auto-suffixed variants
+    candidates = _resolve_candidates(ticker)
 
+    last_yf_err: Exception | None = None
+    for candidate in candidates:
+        try:
+            return _fetch_yfinance(candidate)
+        except Exception as e:
+            last_yf_err = e
+
+    # All yfinance candidates failed — try Alpha Vantage if key supplied
     if api_key:
         try:
             return _fetch_alphavantage(ticker, api_key)
         except Exception as av_err:
             raise ValueError(
                 f"Both data sources failed for '{ticker}'.\n"
-                f"yfinance: {yf_err}\n"
+                f"yfinance (tried: {candidates}): {last_yf_err}\n"
                 f"Alpha Vantage: {av_err}"
             )
 
     raise ValueError(
-        f"Could not fetch data for '{ticker}': {yf_err}\n\n"
-        "Tips for international stocks:\n"
-        "• HK Exchange: 9880.HK  (UBTECH)\n"
-        "• Xetra/Germany: SAP.DE · RHM.DE\n"
-        "• Swiss Exchange: NESN.SW · UBSG.SW\n"
-        "• London: LLOY.L · BP.L\n"
-        "• Tokyo: 7203.T  (Toyota)\n"
-        "• US: AAPL · PLTR · MSFT (no suffix needed)\n\n"
-        "If the error persists, add an Alpha Vantage key in the sidebar as a fallback."
+        f"No data found for '{ticker}'.\n\n"
+        "Use the exchange suffix for non-US stocks:\n"
+        "• HK Exchange  →  9880.HK  (UBTECH · UBTech Robotics)\n"
+        "• Xetra        →  SAP.DE · RHM.DE\n"
+        "• Swiss SIX    →  NESN.SW · UBSG.SW\n"
+        "• London LSE   →  BP.L · LLOY.L\n"
+        "• Tokyo        →  7203.T  (Toyota)\n"
+        "• US stocks    →  AAPL · PLTR · MSFT  (no suffix)\n\n"
+        "Tip: adding an Alpha Vantage key in the sidebar enables a US-stock fallback."
     )
+
+
+def _resolve_candidates(ticker: str) -> list[str]:
+    """
+    Return an ordered list of ticker symbols to try on yfinance.
+    Handles the most common 'user typed a bare code' cases:
+      - Pure 4-digit number (e.g. '9880') → try 9880.HK first (HKEX convention)
+      - Known exchange suffix already present → just that ticker
+      - Otherwise: bare ticker only (works for US stocks)
+    """
+    # Already has a suffix (e.g. '9880.HK', 'SAP.DE', 'NESN.SW', 'BP.L')
+    if "." in ticker:
+        return [ticker]
+
+    # FX pair — no suffix logic needed
+    if is_fx(ticker):
+        return [ticker]
+
+    # Pure numeric ticker (1–5 digits) → almost certainly HKEX; probe a few
+    if ticker.isdigit() and len(ticker) <= 5:
+        padded = ticker.zfill(4)   # HKEX uses zero-padded 4-digit codes
+        raw = [f"{padded}.HK", f"{ticker}.HK", f"{ticker}.T", ticker]
+        return list(dict.fromkeys(raw))   # dedupe, keep order
+
+    # Bare alphabetic ticker — US first, then major exchanges as fallback probes
+    return [
+        ticker,          # US (no suffix)
+        f"{ticker}.L",   # London
+        f"{ticker}.DE",  # Xetra
+        f"{ticker}.SW",  # Swiss
+    ]
 
 
 def _fetch_yfinance(ticker: str) -> dict:
@@ -308,6 +345,7 @@ def _fetch_yfinance(ticker: str) -> dict:
         yf_symbol = ticker_clean + "=X"
         yft = yf.Ticker(yf_symbol)
         hist = yft.history(period="100d", interval="1d", auto_adjust=True)
+        hist = hist.dropna(subset=["Close", "High", "Low"])   # yf can return partial NaN rows
         if hist.empty:
             raise ValueError(f"No FX data for '{ticker}' (tried {yf_symbol})")
         name     = f"{ticker_clean[:3]}/{ticker_clean[3:]} (FX)"
@@ -320,6 +358,7 @@ def _fetch_yfinance(ticker: str) -> dict:
     else:
         yft  = yf.Ticker(ticker)
         hist = yft.history(period="100d", interval="1d", auto_adjust=True)
+        hist = hist.dropna(subset=["Close", "High", "Low"])   # yf can return partial NaN rows
 
         if hist.empty:
             raise ValueError(
@@ -384,14 +423,23 @@ def _fetch_yfinance(ticker: str) -> dict:
 
     vol60 = float(close.pct_change().dropna().tail(60).std() * math.sqrt(252))
 
-    vol_col   = df["Volume"] if "Volume" in df.columns else pd.Series([0] * len(df))
+    vol_col   = (df["Volume"] if "Volume" in df.columns else pd.Series([0.0] * len(df))).fillna(0)
     adv5      = float(vol_col.tail(5).mean()) if not fx else 0
     adv60_usd = float(vol_col.tail(60).mean()) * price_usd if not fx else 0
 
     atr_pct       = tr.rolling(14).mean() / close
-    avg90_atr_pct = float(atr_pct.tail(90).mean())
+    avg90_atr_pct = float(atr_pct.dropna().tail(90).mean())
     cur_atr_pct   = atr14_local / price_local if price_local else 0
     vol_regime    = round(cur_atr_pct / avg90_atr_pct, 2) if avg90_atr_pct else 1.0
+
+    # Final sanity guard — never hand NaN to the sizing engine or the UI
+    if any(math.isnan(x) for x in (price_usd, atr14_usd, vol60)):
+        raise ValueError(
+            f"Incomplete data for '{ticker}' (NaN in price/ATR/vol). "
+            "The source returned partial bars — try again in a moment."
+        )
+    if math.isnan(vol_regime):
+        vol_regime = 1.0
 
     tier = calc_tier(mkt_cap, exchange, adv60_usd) if not fx else "N/A (FX)"
 
@@ -791,7 +839,7 @@ def sidebar():
         nav = st.number_input(
             "Fund NAV (USD)",
             min_value=10_000.0, max_value=1_000_000_000.0,
-            value=st.session_state.get("nav", 2_500_000.0),
+            value=st.session_state.get("nav", 1_000_000.0),
             step=10_000.0, format="%.0f",
         )
         st.session_state["nav"] = nav
